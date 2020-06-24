@@ -1,10 +1,32 @@
 import click
 import importlib
 import os
+import re
 import yaml
 import subprocess
 import sys
 import venv
+
+def install_dep(dep_name, dep_type, uninstall=False):
+    click.echo(f"Installing {dep_name}... \t", nl=False)
+
+    url_regex = "http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
+
+    error = None
+
+    if uninstall:
+        subprocess.run(["./venv/bin/pip", "uninstall", dep_name])
+
+    if re.search(url_regex, dep_type):
+        error = subprocess.run(["./venv/bin/pip", "install", f"git+{dep_type}"], capture_output=True, text=True)
+    elif dep_type == "latest":
+        error = subprocess.run(["./venv/bin/pip", "install", dep_name], capture_output=True, text=True)
+    else:
+        error = subprocess.run(["./venv/bin/pip", "install", f"{dep_name}{dep_type}"], capture_output=True, text=True)
+
+    output = error.stderr.strip("\n") if error.stderr else "done"
+
+    click.echo(output)
 
 @click.group()
 def monty():
@@ -39,6 +61,11 @@ entry: src/main.py
 dependencies: ~
 """
             )
+
+        lock_path = os.path.join(abs_path, "monty_lock.yaml")
+        with open(lock_path, 'w') as l:
+            pass
+
     except Exception as e:
         click.echo(f"Error creating new project: {e}", file=sys.stderr)
 
@@ -48,43 +75,31 @@ def install():
     if "\nwheel" not in subprocess.run(["./venv/bin/pip", "list"], capture_output=True, text=True).stdout.split(" "):
         subprocess.run(["./venv/bin/pip", "install", "wheel"], capture_output=True)
 
-    with open("monty.yaml", "r") as config_file, open("monty_lock.yaml", "w+") as lock_file:
+    with open("monty.yaml", "r") as config_file, open("monty_lock.yaml", "r+") as lock_file:
         deps = yaml.load(config_file, Loader=yaml.SafeLoader)["dependencies"]
+        lock = yaml.load(lock_file, Loader=yaml.SafeLoader)
 
         if deps is None:
             sys.exit(0)
-    
+
+        if lock is None:
+            lock = {}
+
         for dep in deps:
-            if type(dep) is dict:
-                dep_name = list(dep.keys())[0]
-                click.echo(f"Installing {dep_name}... \t", nl=False)
+            dep_name = list(dep.keys())[0]
 
-                if "version" in dep[dep_name]:
-                    version = dep[dep_name]["version"]
-                    pip_output = subprocess.run(["./venv/bin/pip", "install", f"{dep_name}{version}"], capture_output=True)
-
-                    if pip_output.stderr:
-                        click.echo(pip_output.stderr, nl=False)
-                    else:
-                        click.echo("done")
-                    
-                elif "url" in dep[dep_name]:
-                    url = dep[dep_name]["url"]
-                    pip_output = subprocess.run(["./venv/bin/pip", "install", f"git+{url}"], capture_output=True)
-
-                    if pip_output.stderr:
-                        click.echo(pip_output.stderr, nl=False)
-                    else:
-                        click.echo("done")
-                    
+            if dep_name not in lock:
+                install_dep(dep_name, dep[dep_name])
+                lock[dep_name] = dep[dep_name]
+            elif lock[dep_name] == dep[dep_name]:
+                click.echo(f"installing {dep_name}...\talready installed")
             else:
-                click.echo(f"Installing {dep}... \t", nl=False)
-                pip_output = subprocess.run(["./venv/bin/python3", "-m", "pip", "install", dep], capture_output=True)
+                install_dep(dep_name, dep[dep_name], uninstall=True)
+                lock[dep_name] = dep[dep_name]
 
-                if pip_output.stderr:
-                    click.echo(pip_output.stderr, nl=False)
-                else:
-                    click.echo("done")
+        lock_file.seek(0)
+        yaml.dump(lock, lock_file)
+        lock_file.truncate()
 
 @click.command(help="Runs the given monty script")
 def run():
